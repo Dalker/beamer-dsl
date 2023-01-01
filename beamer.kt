@@ -45,6 +45,7 @@ interface LaTeXContainer : LaTeXable {
     fun <T : LaTeX> addContent(content: T, bloc: T.() -> Unit = {}): Unit
     fun <T : LaTeX> insertContent(content: T, bloc: T.() -> Unit = {}): Unit
     operator fun String.unaryPlus(): Unit
+    operator fun Int.times(s: String): Unit
     fun command(name: String, arg: String? = null, bloc: Command.() -> Unit = {}): Unit
     fun environment(name: String, arg: String? = null, bloc: Environment.() -> Unit = {}): Unit
     fun itemize(bloc: Environment.() -> Unit)
@@ -85,6 +86,9 @@ abstract class Container : LaTeX(), LaTeXContainer {
 
     // inclure du texte brut
     override operator fun String.unaryPlus() = addContent(RawTeX("$this\n"))
+    override operator fun Int.times(s: String) = (if(this < 0) "${-this}-" else "$this").let {
+        addContent(RawTeX("\\onslide<$it>{$s}\n"))
+    }
     override fun comment(comment: String) = addContent(RawTeX("%$comment\n"))
     override fun blankline() = addContent(RawTeX("\n"))
 
@@ -167,6 +171,9 @@ open class Environment(val name: String, arg: String? = null) :
 
 class Itemize() : Environment("itemize") {
     override operator fun String.unaryPlus() = addContent(RawTeX("\\item $this\n"))
+    override operator fun Int.times(s: String) = (if(this < 0) "${-this}-" else "$this").let {
+        addContent(RawTeX("\\item<$it> $s\n"))
+    }
 }
 
 class Header() : Container() {
