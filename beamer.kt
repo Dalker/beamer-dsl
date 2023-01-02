@@ -48,13 +48,15 @@ interface LaTeXContainer : LaTeXable {
     fun <T : LaTeX> insertContent(content: T, bloc: T.() -> Unit = {}): T
     operator fun String.unaryPlus(): TranslatableTeX
     operator fun Int.times(s: String): TranslatableTeX
+    operator fun Int.times(l: () -> LaTeX): LaTeX
     fun comment(comment: String): RawTeX
     fun blankline(): RawTeX
     fun command(name: String, arg: String? = null, bloc: Command.() -> Unit = {}): Command
+    fun section(name: String? = null, sub: String? = null): Unit
     fun environment(name: String, arg: String? = null, bloc: Environment.() -> Unit = {}): Environment
     fun itemize(bloc: Environment.() -> Unit): Itemize
     fun containingCommand(name: String, bloc: ContainingCommand.() -> Unit = {}): ContainingCommand
-    fun section(name: String? = null, sub: String? = null): Unit
+    fun on(slideNumber: Int, bloc: ContainingCommand.() -> Unit): ContainingCommand
 }
 
 /** Conteneur de strutures LaTeX */
@@ -86,8 +88,12 @@ abstract class Container : LaTeX(), LaTeXContainer {
 
     // inclure du texte brut
     override operator fun String.unaryPlus() = addContent(TranslatableTeX("$this\n"))
-    override operator fun Int.times(s: String) = (if(this < 0) "${-this}-" else "$this").let {
+    override operator fun Int.times(s: String) = (if(this > 0) "${this}-" else "-$this").let {
         addContent(TranslatableTeX("\\onslide<$it>{$s}\n"))
+    }
+    override operator fun Int.times(l: () -> LaTeX) = (if(this > 0) "${this}-" else "-$this").let {
+        containingCommand("onslide<$it>").apply { addContent(l()) }
+        // addContent(TranslatableTeX("\\onslide<$it>{$l}\n"))
     }
     override fun comment(comment: String) = addContent(RawTeX("%$comment\n"))
     override fun blankline() = addContent(RawTeX("\n"))
@@ -95,12 +101,16 @@ abstract class Container : LaTeX(), LaTeXContainer {
     // inclure une macro LaTeX
     override fun command(name: String, arg: String?, bloc: Command.() -> Unit) =
         addContent(Command(name, arg), bloc)
-    override fun containingCommand(name: String, bloc: ContainingCommand.() -> Unit)
-        = addContent(ContainingCommand(name), bloc)
+    override fun containingCommand(name: String, bloc: ContainingCommand.() -> Unit) =
+        addContent(ContainingCommand(name), bloc)
     override fun section(name: String?, sub: String?) {
         name ?.let { addContent(Command("section", it)) }
         sub ?.let { addContent(Command("subsection", it)) }
     }
+    override fun on(slideNumber: Int, bloc: ContainingCommand.() -> Unit) =
+        (if(slideNumber < 0) "${-slideNumber}-" else "$slideNumber").let {
+            addContent(ContainingCommand("onslide<$it>"), bloc)
+        }
 
     // inclure un environnement LaTeX
     override fun environment(name: String, arg: String?, bloc: Environment.() -> Unit)
@@ -121,10 +131,13 @@ class TranslatableTeX(val text: String) : LaTeX() {
     override fun toLaTeX(sb: StringBuilder, indent: String) {
         sb.append(indent
                   + text.replace("...", "\\ldots{}")
-                      .replace(Regex("""(.*)/(.+)/(.*)""")) {
-                                   val (pre, match, post) = it.destructured
-                                   "$pre\\textit{$match}$post"
-        })
+                      .replace(Regex("""/([^/]+)/""")) {
+                          "\\textit{${it.value.drop(1).dropLast(1)}}"
+                      }
+                      .replace(Regex("""\|([^\|]+)\|""")) {
+                          "\\texttt{${it.value.drop(1).dropLast(1)}}"
+                      }
+        )
     }
 }
 
@@ -178,7 +191,7 @@ open class Environment(val name: String, arg: String? = null) :
 
 class Itemize() : Environment("itemize") {
     override operator fun String.unaryPlus() = addContent(TranslatableTeX("\\item $this\n"))
-    override operator fun Int.times(s: String) = (if(this < 0) "${-this}-" else "$this").let {
+    override operator fun Int.times(s: String) = (if(this > 0) "${this}-" else "-$this").let {
         addContent(TranslatableTeX("\\item<$it> $s\n"))
     }
 }
@@ -190,22 +203,26 @@ class Header() : Container() {
 
 class Code(language: String, blockTitle: String) : Environment("block", blockTitle) {
     constructor(language: String): this(language, language)
+
     val mint = Environment("minted", language).also { addContent(it) }
-    operator fun rem(code: String) {
-        mint.addContent(RawTeX(code.trim() + "\n"))
-    }
+
+    operator fun rem(code: String): Code =
+        mint.addContent(RawTeX(code.trim() + "\n")).let { this }
+
     companion object {
         fun header() = Header().apply { pkg("minted") { !"pour inclure du code" } }
     }
 }
 
-open class Frame(title: String? = null) : Environment("frame", title)
-
-class CodeFrame(title: String? = null) : Frame(title) {
-    init { -"fragile" }
+open class Frame(title: String? = null) : Environment("frame", title) {
+    fun pause() = addContent(Command("pause"))
     fun code(language: String) = addContent(Code(language))
     fun code(language: String, blockTitle: String) =
         addContent(Code(language, blockTitle))
+    override fun toLaTeX(sb: StringBuilder, indent: String) {
+        if (has(Code::class)) apply { -"fragile" }
+        super.toLaTeX(sb, indent)
+    }
 }
 
 class Beamer(val toctitle: String? = null, private val document: Environment) : LaTeXContainer by document {
@@ -254,8 +271,6 @@ class Beamer(val toctitle: String? = null, private val document: Environment) : 
 
     fun frame(title: String? = null, bloc: Frame.() -> Unit) =
         addContent(Frame(title), bloc)
-    fun codeframe(title: String? = null, bloc: CodeFrame.() -> Unit) =
-        addContent(CodeFrame(title), bloc)
 
     override fun toString() = StringBuilder().also {
         baseHeader.toLaTeX(it)
