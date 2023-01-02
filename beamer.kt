@@ -9,6 +9,8 @@ package dalker.beamer
 
 import kotlin.reflect.KClass
 
+typealias FrameDefinition = Beamer.() -> Frame
+
 @DslMarker
 annotation class LaTeXDSL
 
@@ -42,17 +44,17 @@ class Arguments(
 }
 
 interface LaTeXContainer : LaTeXable {
-    fun <T : LaTeX> addContent(content: T, bloc: T.() -> Unit = {}): Unit
-    fun <T : LaTeX> insertContent(content: T, bloc: T.() -> Unit = {}): Unit
-    operator fun String.unaryPlus(): Unit
-    operator fun Int.times(s: String): Unit
-    fun command(name: String, arg: String? = null, bloc: Command.() -> Unit = {}): Unit
-    fun environment(name: String, arg: String? = null, bloc: Environment.() -> Unit = {}): Unit
-    fun itemize(bloc: Environment.() -> Unit)
-    fun containingCommand(name: String, bloc: ContainingCommand.() -> Unit = {}): Unit
+    fun <T : LaTeX> addContent(content: T, bloc: T.() -> Unit = {}): T
+    fun <T : LaTeX> insertContent(content: T, bloc: T.() -> Unit = {}): T
+    operator fun String.unaryPlus(): TranslatableTeX
+    operator fun Int.times(s: String): TranslatableTeX
+    fun comment(comment: String): RawTeX
+    fun blankline(): RawTeX
+    fun command(name: String, arg: String? = null, bloc: Command.() -> Unit = {}): Command
+    fun environment(name: String, arg: String? = null, bloc: Environment.() -> Unit = {}): Environment
+    fun itemize(bloc: Environment.() -> Unit): Itemize
+    fun containingCommand(name: String, bloc: ContainingCommand.() -> Unit = {}): ContainingCommand
     fun section(name: String? = null, sub: String? = null): Unit
-    fun comment(comment: String): Unit
-    fun blankline(): Unit
 }
 
 /** Conteneur de strutures LaTeX */
@@ -71,12 +73,10 @@ abstract class Container : LaTeX(), LaTeXContainer {
     }
 
     /** Ajouter un contenu et possiblement agir dessus */
-    override fun <T : LaTeX> addContent(content: T, bloc: T.() -> Unit) {
+    override fun <T : LaTeX> addContent(content: T, bloc: T.() -> Unit) =
         content.apply(bloc).also { contents.add(it) }
-    }
-    override fun <T : LaTeX> insertContent(content: T, bloc: T.() -> Unit) {
+    override fun <T : LaTeX> insertContent(content: T, bloc: T.() -> Unit) =
         content.apply(bloc).also { contents.add(0, it) }
-    }
 
     override fun toLaTeX(sb: StringBuilder, indent: String) {
         for (content in contents) {
@@ -85,9 +85,9 @@ abstract class Container : LaTeX(), LaTeXContainer {
     }
 
     // inclure du texte brut
-    override operator fun String.unaryPlus() = addContent(RawTeX("$this\n"))
+    override operator fun String.unaryPlus() = addContent(TranslatableTeX("$this\n"))
     override operator fun Int.times(s: String) = (if(this < 0) "${-this}-" else "$this").let {
-        addContent(RawTeX("\\onslide<$it>{$s}\n"))
+        addContent(TranslatableTeX("\\onslide<$it>{$s}\n"))
     }
     override fun comment(comment: String) = addContent(RawTeX("%$comment\n"))
     override fun blankline() = addContent(RawTeX("\n"))
@@ -111,6 +111,13 @@ abstract class Container : LaTeX(), LaTeXContainer {
 
 /** texte brut - qui pourrait quand même contenir du code LaTeX */
 class RawTeX(val text: String) : LaTeX() {
+    override fun toLaTeX(sb: StringBuilder, indent: String) {
+        sb.append(text) // no indent: this is used for unprocessed text!
+    }
+}
+
+/** texte interprétable comme mini-ML vers LaTeX */
+class TranslatableTeX(val text: String) : LaTeX() {
     override fun toLaTeX(sb: StringBuilder, indent: String) {
         sb.append(indent
                   + text.replace("...", "\\ldots{}")
@@ -170,9 +177,9 @@ open class Environment(val name: String, arg: String? = null) :
 }
 
 class Itemize() : Environment("itemize") {
-    override operator fun String.unaryPlus() = addContent(RawTeX("\\item $this\n"))
+    override operator fun String.unaryPlus() = addContent(TranslatableTeX("\\item $this\n"))
     override operator fun Int.times(s: String) = (if(this < 0) "${-this}-" else "$this").let {
-        addContent(RawTeX("\\item<$it> $s\n"))
+        addContent(TranslatableTeX("\\item<$it> $s\n"))
     }
 }
 
@@ -181,7 +188,12 @@ class Header() : Container() {
     fun pkg(name: String, bloc: Package.() -> Unit = {}) = addContent(Package(name), bloc)
 }
 
-class Code(language: String) : Environment("minted", language) {
+class Code(language: String, blockTitle: String) : Environment("block", blockTitle) {
+    constructor(language: String): this(language, language)
+    val mint = Environment("minted", language).also { addContent(it) }
+    operator fun rem(code: String) {
+        mint.addContent(RawTeX(code.trim() + "\n"))
+    }
     companion object {
         fun header() = Header().apply { pkg("minted") { !"pour inclure du code" } }
     }
@@ -191,9 +203,9 @@ open class Frame(title: String? = null) : Environment("frame", title)
 
 class CodeFrame(title: String? = null) : Frame(title) {
     init { -"fragile" }
-    fun code(language: String, bloc: Code.() -> Unit) {
-        addContent(Code(language), bloc)
-    }
+    fun code(language: String) = addContent(Code(language))
+    fun code(language: String, blockTitle: String) =
+        addContent(Code(language, blockTitle))
 }
 
 class Beamer(val toctitle: String? = null, private val document: Environment) : LaTeXContainer by document {
