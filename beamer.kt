@@ -152,7 +152,7 @@ open class Command(val name: String, vararg args: String) :
             sb.append(optArgs.joinToString(", ", "[", "]"))
         }
         if (args.isNotEmpty()) {
-            sb.append(args.joinToString(", ", "{", "}"))
+            sb.append(args.joinToString("}{", "{", "}"))
         }
         comment?.let { sb.append(" % $comment") }
         sb.append("\n")
