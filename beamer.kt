@@ -37,7 +37,9 @@ class Arguments(
     override val optArgs: MutableList<String> = mutableListOf<String>(),
     override var comment: String? = null,
 ) : LaTeXArguments {
-    constructor(arg: String?) : this() { arg ?.let { args.add(arg) } }
+    constructor(vararg args_: String) : this() {
+        for (arg in args_) { args.add(arg) }
+    }
 
     override operator fun String.unaryMinus() { optArgs.add(this) }
     override operator fun String.not() { comment = this }
@@ -51,9 +53,9 @@ interface LaTeXContainer : LaTeXable {
     operator fun Int.times(l: () -> LaTeX): LaTeX
     fun comment(comment: String): RawTeX
     fun blankline(): RawTeX
-    fun command(name: String, arg: String? = null, bloc: Command.() -> Unit = {}): Command
+    fun command(name: String, vararg args: String, bloc: Command.() -> Unit = {}): Command
     fun section(name: String? = null, sub: String? = null): Unit
-    fun environment(name: String, arg: String? = null, bloc: Environment.() -> Unit = {}): Environment
+    fun environment(name: String, vararg args: String, bloc: Environment.() -> Unit = {}): Environment
     fun itemize(bloc: Environment.() -> Unit): Itemize
     fun containingCommand(name: String, bloc: ContainingCommand.() -> Unit = {}): ContainingCommand
     fun on(slideNumber: Int, bloc: ContainingCommand.() -> Unit): ContainingCommand
@@ -99,8 +101,8 @@ abstract class Container : LaTeX(), LaTeXContainer {
     override fun blankline() = addContent(RawTeX("\n"))
 
     // inclure une macro LaTeX
-    override fun command(name: String, arg: String?, bloc: Command.() -> Unit) =
-        addContent(Command(name, arg), bloc)
+    override fun command(name: String, vararg args: String, bloc: Command.() -> Unit) =
+        addContent(Command(name, *args), bloc)
     override fun containingCommand(name: String, bloc: ContainingCommand.() -> Unit) =
         addContent(ContainingCommand(name), bloc)
     override fun section(name: String?, sub: String?) {
@@ -113,8 +115,8 @@ abstract class Container : LaTeX(), LaTeXContainer {
         }
 
     // inclure un environnement LaTeX
-    override fun environment(name: String, arg: String?, bloc: Environment.() -> Unit)
-        = addContent(Environment(name, arg), bloc)
+    override fun environment(name: String, vararg args: String, bloc: Environment.() -> Unit)
+        = addContent(Environment(name, *args), bloc)
     override fun itemize(bloc: Environment.() -> Unit)
         = addContent(Itemize(), bloc)
 }
@@ -142,8 +144,8 @@ class TranslatableTeX(val text: String) : LaTeX() {
 }
 
 /** Commande LaTeX avec possibles arguments {...}, arguments optionnels [...] et commentaire % ... */
-open class Command(val name: String, arg: String? = null) :
-    LaTeX(), LaTeXArguments by Arguments(arg) {
+open class Command(val name: String, vararg args: String) :
+    LaTeX(), LaTeXArguments by Arguments(*args) {
     override fun toLaTeX(sb: StringBuilder, indent: String) {
         sb.append("$indent\\$name")
         if (optArgs.isNotEmpty()) {
@@ -172,8 +174,17 @@ class ContainingCommand(val name: String) :
         }
     }
 
-open class Environment(val name: String, arg: String? = null) :
-    Container(), LaTeXArguments by Arguments(arg) {
+class NewCommand(val name: String, val nArgs: Int) : Container() {
+    override fun toLaTeX(sb: StringBuilder, indent: String) {
+        sb.append("$indent\\newcommand\\$name[$nArgs]")
+        sb.append("{\n")
+        super.toLaTeX(sb, indent + "  ")
+        sb.append("}\n")
+    }
+}
+
+open class Environment(val name: String, vararg args: String) :
+    Container(), LaTeXArguments by Arguments(*args) {
     override fun toLaTeX(sb: StringBuilder, indent: String) {
         sb.append("""$indent\begin{$name}""")
         if (optArgs.isNotEmpty()) {
@@ -198,7 +209,10 @@ class Itemize() : Environment("itemize") {
 
 class Header() : Container() {
     inner class Package(name: String) : Command("usepackage", name)
-    fun pkg(name: String, bloc: Package.() -> Unit = {}) = addContent(Package(name), bloc)
+    fun pkg(name: String, bloc: Package.() -> Unit = {}) =
+        addContent(Package(name), bloc)
+    fun newcommand(name: String, nArgs: Int, bloc: NewCommand.() -> Unit) =
+        addContent(NewCommand(name, nArgs), bloc)
 }
 
 class Code(language: String, blockTitle: String) : Environment("block", blockTitle) {
@@ -214,7 +228,8 @@ class Code(language: String, blockTitle: String) : Environment("block", blockTit
     }
 }
 
-open class Frame(title: String? = null) : Environment("frame", title) {
+open class Frame(title: String? = null) : Environment("frame") {
+    init { title?.let{ args.add(title) }}
     fun pause() = addContent(Command("pause"))
     fun code(language: String) = addContent(Code(language))
     fun code(language: String, blockTitle: String) =
@@ -257,6 +272,8 @@ class Beamer(val toctitle: String? = null, private val document: Environment) : 
     fun head(bloc: Header.() -> Unit) = customHeader.apply(bloc)
     fun pkg(name: String, bloc: Header.Package.() -> Unit = {}) =
         customHeader.pkg(name, bloc)
+    fun newcommand(name: String, nArgs: Int, bloc: NewCommand.() -> Unit) =
+        customHeader.newcommand(name, nArgs, bloc)
 
     fun titleframe(title: String, author: String, date: String? = null, subtitle: String? = null) {
         head {
