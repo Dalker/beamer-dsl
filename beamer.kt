@@ -50,15 +50,17 @@ interface LaTeXContainer : LaTeXable {
     fun <T : LaTeX> insertContent(content: T, bloc: T.() -> Unit = {}): T
     operator fun String.unaryPlus(): TranslatableTeX
     operator fun Int.times(s: String): TranslatableTeX
-    operator fun Int.times(l: () -> LaTeX): LaTeX
+    operator fun String.times(n: Int): TranslatableTeX
+    operator fun times(n: Int): LaTeXContainer
+    operator fun Int.times(lc: LaTeXContainer): LaTeXContainer
     fun comment(comment: String): RawTeX
     fun blankline(): RawTeX
     fun command(name: String, vararg args: String, bloc: Command.() -> Unit = {}): Command
+    fun containingCommand(name: String, bloc: ContainingCommand.() -> Unit = {}): ContainingCommand
     fun section(name: String? = null, sub: String? = null): Unit
     fun environment(name: String, vararg args: String, bloc: Environment.() -> Unit = {}): Environment
+    fun center(bloc: Environment.() -> Unit = {}): Environment
     fun itemize(bloc: Environment.() -> Unit): Itemize
-    fun containingCommand(name: String, bloc: ContainingCommand.() -> Unit = {}): ContainingCommand
-    fun on(slideNumber: Int, bloc: ContainingCommand.() -> Unit): ContainingCommand
 }
 
 /** Conteneur de strutures LaTeX */
@@ -76,6 +78,13 @@ abstract class Container : LaTeX(), LaTeXContainer {
         return false
     }
 
+    /** Limiter à certaines "slides" du frame actuel */
+    // n'a pas d'effet sur le LaTeX final dans la classe abstraite
+    // il faut l'utiliser dans un override de toLaTeX d'une sous-classe
+    var slidesNum: Int? = null
+    override operator fun times(n: Int) = this.apply { slidesNum = n }
+    override operator fun Int.times(lc: LaTeXContainer) = lc * this
+
     /** Ajouter un contenu et possiblement agir dessus */
     override fun <T : LaTeX> addContent(content: T, bloc: T.() -> Unit) =
         content.apply(bloc).also { contents.add(it) }
@@ -90,13 +99,9 @@ abstract class Container : LaTeX(), LaTeXContainer {
 
     // inclure du texte brut
     override operator fun String.unaryPlus() = addContent(TranslatableTeX("$this\n"))
-    override operator fun Int.times(s: String) = (if(this > 0) "${this}-" else "-$this").let {
-        addContent(TranslatableTeX("\\onslide<$it>{$s}\n"))
-    }
-    override operator fun Int.times(l: () -> LaTeX) = (if(this > 0) "${this}-" else "-$this").let {
-        containingCommand("onslide<$it>").apply { addContent(l()) }
-        // addContent(TranslatableTeX("\\onslide<$it>{$l}\n"))
-    }
+    override operator fun Int.times(s: String) =
+        addContent(TranslatableTeX(numToOnSlide(this) + "{$s}\n"))
+    override operator fun String.times(n: Int) = n * this
     override fun comment(comment: String) = addContent(RawTeX("%$comment\n"))
     override fun blankline() = addContent(RawTeX("\n"))
 
@@ -109,16 +114,22 @@ abstract class Container : LaTeX(), LaTeXContainer {
         name ?.let { addContent(Command("section", it)) }
         sub ?.let { addContent(Command("subsection", it)) }
     }
-    override fun on(slideNumber: Int, bloc: ContainingCommand.() -> Unit) =
-        (if(slideNumber < 0) "${-slideNumber}-" else "$slideNumber").let {
-            addContent(ContainingCommand("onslide<$it>"), bloc)
-        }
 
     // inclure un environnement LaTeX
     override fun environment(name: String, vararg args: String, bloc: Environment.() -> Unit)
         = addContent(Environment(name, *args), bloc)
     override fun itemize(bloc: Environment.() -> Unit)
         = addContent(Itemize(), bloc)
+    override fun center(bloc: Environment.() -> Unit) =
+        addContent(Environment("center"), bloc)
+
+    companion object {
+        /** Traduire un nombre en qualificateur pour \onslide, \item, etc. */
+        fun numToSlideRange(n: Int) =
+            if(n < 0) "<only@${-n}>" else "<$n->"
+        fun numToOnSlide(n: Int) =
+            if(n < 0) "\\only<${-n}>" else "\\onslide<$n->"
+    }
 }
 
 /** texte brut - qui pourrait quand même contenir du code LaTeX */
@@ -145,15 +156,21 @@ class TranslatableTeX(val text: String) : LaTeX() {
 
 /** Commande LaTeX avec possibles arguments {...}, arguments optionnels [...] et commentaire % ... */
 open class Command(val name: String, vararg args: String) :
-    LaTeX(), LaTeXArguments by Arguments(*args) {
+    Container(), LaTeXArguments by Arguments(*args) {
+
     override fun toLaTeX(sb: StringBuilder, indent: String) {
-        sb.append("$indent\\$name")
+        sb.append("$indent")
+        slidesNum ?.let {
+            sb.append(numToOnSlide(slidesNum!!) + "{\n$indent  ")
+        }
+        sb.append("\\$name")
         if (optArgs.isNotEmpty()) {
             sb.append(optArgs.joinToString(", ", "[", "]"))
         }
         if (args.isNotEmpty()) {
             sb.append(args.joinToString("}{", "{", "}"))
         }
+        slidesNum ?.let { sb.append("\n$indent}") }
         comment?.let { sb.append(" % $comment") }
         sb.append("\n")
     }
@@ -186,7 +203,9 @@ class NewCommand(val name: String, val nArgs: Int) : Container() {
 open class Environment(val name: String, vararg args: String) :
     Container(), LaTeXArguments by Arguments(*args) {
     override fun toLaTeX(sb: StringBuilder, indent: String) {
-        sb.append("""$indent\begin{$name}""")
+        val newIndent = if (slidesNum == null) indent else indent + "  "
+        slidesNum ?.let { sb.append("$indent${numToOnSlide(slidesNum!!)}{\n") }
+        sb.append("$newIndent\\begin{$name}")
         if (optArgs.isNotEmpty()) {
             sb.append(optArgs.joinToString(", ", "[", "]"))
         }
@@ -195,16 +214,16 @@ open class Environment(val name: String, vararg args: String) :
         }
         comment?.let { sb.append(" % $comment") }
         sb.append("\n")
-        super.toLaTeX(sb, indent + "  ")
-        sb.append("$indent\\end{$name}\n")
+        super.toLaTeX(sb, newIndent + "  ")
+        sb.append("$newIndent\\end{$name}\n")
+        slidesNum ?.let { sb.append("$indent}\n") }
     }
 }
 
 class Itemize() : Environment("itemize") {
     override operator fun String.unaryPlus() = addContent(TranslatableTeX("\\item $this\n"))
-    override operator fun Int.times(s: String) = (if(this > 0) "${this}-" else "-$this").let {
-        addContent(TranslatableTeX("\\item<$it> $s\n"))
-    }
+    override operator fun Int.times(s: String) =
+        addContent(TranslatableTeX("\\item${numToSlideRange(this)} $s\n"))
 }
 
 class Header() : Container() {
@@ -215,16 +234,28 @@ class Header() : Container() {
         addContent(NewCommand(name, nArgs), bloc)
 }
 
-class Code(language: String, blockTitle: String) : Environment("block", blockTitle) {
+class Code(language: String, blockTitle: String) : Bloc(blockTitle) {
     constructor(language: String): this(language, language)
 
     val mint = Environment("minted", language).also { addContent(it) }
 
-    operator fun rem(code: String): Code =
-        mint.addContent(RawTeX(code.trim() + "\n")).let { this }
+    operator fun rem(code: String): Code = this.apply {
+        mint.addContent(RawTeX(code.trim() + "\n"))
+    }
 
     companion object {
         fun header() = Header().apply { pkg("minted") { !"pour inclure du code" } }
+    }
+}
+
+open class Bloc(val title: String = ""): Container() {
+    override fun toLaTeX(sb: StringBuilder, indent: String) {
+        sb.append("$indent\\begin{block}")
+        slidesNum ?.let { sb.append(numToSlideRange(slidesNum!!)) }
+        sb.append("{$title}")
+        sb.append("\n")
+        super.toLaTeX(sb, indent + "  ")
+        sb.append("$indent\\end{block}\n")
     }
 }
 
@@ -234,6 +265,9 @@ open class Frame(title: String? = null) : Environment("frame") {
     fun code(language: String) = addContent(Code(language))
     fun code(language: String, blockTitle: String) =
         addContent(Code(language, blockTitle))
+    fun bloc(title: String = "", bloc: Bloc.() -> Unit) =
+        addContent(Bloc(title), bloc)
+
     override fun toLaTeX(sb: StringBuilder, indent: String) {
         if (has(Code::class)) apply { -"fragile" }
         super.toLaTeX(sb, indent)
