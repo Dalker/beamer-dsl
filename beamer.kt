@@ -259,7 +259,7 @@ open class Bloc(val title: String = ""): Container() {
     }
 }
 
-open class Frame(title: String? = null) : Environment("frame") {
+class Frame(title: String? = null) : Environment("frame") {
     init { title?.let{ args.add(title) }}
     fun pause() = addContent(Command("pause"))
     fun code(language: String) = addContent(Code(language))
@@ -296,9 +296,6 @@ class Beamer(val toctitle: String? = null, private val document: Environment) : 
                     }
                 }
             }
-            frame(tt) {
-                command("tableofcontents") { -"hideallsubsections"}
-            }
         }
     }
 
@@ -309,14 +306,17 @@ class Beamer(val toctitle: String? = null, private val document: Environment) : 
     fun newcommand(name: String, nArgs: Int, bloc: NewCommand.() -> Unit) =
         customHeader.newcommand(name, nArgs, bloc)
 
-    fun titleframe(title: String, author: String, date: String? = null, subtitle: String? = null) {
+    fun setTitle(title: String, author: String, date: String? = null, subtitle: String? = null) {
         head {
             command("title", title)
             command("author", author)
             date ?.let { command("date", it) }
-                 ?:run { containingCommand("date") { command("today") } }
+                ?: run { containingCommand("date") { command("today") } }
             subtitle ?.let { command("subtitle", it) }
-            }
+        }
+        insertContent(Frame(title)) {
+            command("tableofcontents") { -"hideallsubsections" }
+        }
         insertContent(Frame()) { command("titlepage") }
     }
 
